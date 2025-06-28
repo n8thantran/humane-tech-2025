@@ -500,11 +500,6 @@ const Dashboard = () => {
           </div>
           
           <div>
-            <label className="text-xs font-medium text-gray-400 uppercase tracking-wide">Location</label>
-            <p className="text-sm text-white mt-1">{currentCall.location.address}</p>
-          </div>
-          
-          <div>
             <label className="text-xs font-medium text-gray-400 uppercase tracking-wide">Call Type</label>
             <p className="text-sm text-white mt-1">{currentCall.type}</p>
           </div>
