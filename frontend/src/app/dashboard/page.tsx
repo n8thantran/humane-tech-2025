@@ -42,6 +42,7 @@ const Dashboard = () => {
   const map = useRef<mapboxgl.Map | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const emergencyMarkerRef = useRef<mapboxgl.Marker | null>(null);
   
   // State for real-time data
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
@@ -109,10 +110,19 @@ const Dashboard = () => {
     const activeCallIds = Object.keys(activeCalls);
     if (activeCallIds.length > 0) {
       const call = activeCalls[activeCallIds[0]];
+      
+      // Calculate call duration in seconds
+      const start = new Date(call.start_time);
+      const now = new Date();
+      const durationInSeconds = Math.floor((now.getTime() - start.getTime()) / 1000);
+      
+      // Priority starts as NORMAL and changes to HIGH after 5 seconds
+      const priority = durationInSeconds >= 5 ? "HIGH" : "NORMAL";
+      
       return {
         id: call.call_id,
         status: call.status.toUpperCase(),
-        priority: "HIGH",
+        priority: priority,
         type: "EMERGENCY",
         location: defaultCallData.location, // Use default location for now
         caller: {
@@ -292,6 +302,38 @@ const Dashboard = () => {
 
   const currentCall = getCurrentCall();
 
+  // Function to manage emergency marker visibility
+  const updateEmergencyMarker = () => {
+    if (!map.current) return;
+
+    // Remove existing marker if any
+    if (emergencyMarkerRef.current) {
+      emergencyMarkerRef.current.remove();
+      emergencyMarkerRef.current = null;
+    }
+
+    // Only add marker if there's an active call (not in STANDBY, ended, or failed)
+    const hasActiveCall = Object.keys(activeCalls).length > 0;
+    const isCallActive = currentCall.status !== 'STANDBY' && 
+                        currentCall.status !== 'ENDED' && 
+                        currentCall.status !== 'FAILED';
+    
+    if (isCallActive && hasActiveCall) {
+      const sfCoordinates: [number, number] = [-122.3971, 37.7761];
+      
+      emergencyMarkerRef.current = new mapboxgl.Marker({ color: '#ef4444', scale: 1.5 })
+        .setLngLat(sfCoordinates)
+        .setPopup(new mapboxgl.Popup().setHTML(
+          `<div class="p-2">
+            <h3 class="font-bold text-red-600">ACTIVE EMERGENCY CALL</h3>
+            <p class="text-sm">Address: 690 5th St, San Francisco, CA 94107</p>
+            <p class="text-sm">Caller: ${currentCall.caller.phone}</p>
+          </div>`
+        ))
+        .addTo(map.current);
+    }
+  };
+
   // Initialize map with hardcoded SF coordinates
   useEffect(() => {
     if (map.current) return;
@@ -315,18 +357,6 @@ const Dashboard = () => {
 
       map.current.on('load', () => {
         if (!map.current) return;
-
-        // Add emergency marker for the call location
-        new mapboxgl.Marker({ color: '#ef4444', scale: 1.5 })
-          .setLngLat(sfCoordinates)
-          .setPopup(new mapboxgl.Popup().setHTML(
-            `<div class="p-2">
-              <h3 class="font-bold text-red-600">${currentCall.status === 'STANDBY' ? 'MONITORING LOCATION' : 'ACTIVE EMERGENCY CALL'}</h3>
-              <p class="text-sm">Address: 690 5th St, San Francisco, CA 94107</p>
-              <p class="text-sm">Caller: ${currentCall.caller.phone}</p>
-            </div>`
-          ))
-          .addTo(map.current);
 
         // Add nearby emergency services
         const emergencyServices = [
@@ -356,6 +386,9 @@ const Dashboard = () => {
             .setPopup(new mapboxgl.Popup().setHTML(`<h3 class="font-bold">${service.title}</h3>`))
             .addTo(map.current!);
         });
+
+        // Initialize emergency marker based on current call status
+        updateEmergencyMarker();
       });
     }
 
@@ -364,7 +397,12 @@ const Dashboard = () => {
         map.current.remove();
       }
     };
-  }, []); // Removed dependency on currentCall.location.coordinates
+  }, []);
+
+  // Update emergency marker when call status changes
+  useEffect(() => {
+    updateEmergencyMarker();
+  }, [activeCalls, currentCall.status]);
 
   const formatTime = (timestamp: string) => {
     return new Date(timestamp).toLocaleTimeString();
@@ -501,20 +539,11 @@ const Dashboard = () => {
       <div className="absolute top-16 right-6 z-10 bg-gray-800/95 backdrop-blur-sm rounded-lg shadow-2xl w-96 h-96 border border-gray-700 flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
           <h3 className="text-lg font-semibold text-white">Live Transcript</h3>
-          <div className="flex items-center space-x-4">
-            <button 
-              onClick={clearTranscripts}
-              className="text-xs bg-red-600/20 text-red-300 px-2 py-1 rounded hover:bg-red-600/30 transition-colors"
-              title="Clear transcript"
-            >
-              Clear
-            </button>
-            <div className="flex items-center space-x-2">
-              <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-              <span className="text-xs text-gray-300">
-                {connectionStatus === 'connected' ? 'Recording' : 'Offline'}
-              </span>
-            </div>
+          <div className="flex items-center space-x-2">
+            <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+            <span className="text-xs text-gray-300">
+              {connectionStatus === 'connected' ? 'Recording' : 'Offline'}
+            </span>
           </div>
         </div>
         
@@ -584,7 +613,7 @@ const Dashboard = () => {
         <div className="space-y-2">
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-            <span className="text-xs text-gray-300">Emergency Call Location</span>
+            <span className="text-xs text-gray-300">Emergency Call Location (Active Calls Only)</span>
           </div>
           <div className="flex items-center space-x-2">
             <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
