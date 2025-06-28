@@ -191,6 +191,16 @@ class TranscriptManager:
             "recent_activity": len([t for t in self.transcripts 
                                   if (datetime.now() - datetime.fromisoformat(t.timestamp)).seconds < 300])
         }
+    
+    async def clear_transcripts(self):
+        """Clear all stored transcripts and broadcast to clients"""
+        self.transcripts.clear()
+        
+        # Broadcast clear event to all connected clients
+        await self.broadcast_message({
+            "type": "transcripts_cleared",
+            "data": {"message": "All transcripts cleared", "timestamp": datetime.now().isoformat()}
+        })
 
 # Global transcript manager instance
 transcript_manager = TranscriptManager() 

@@ -274,6 +274,23 @@ async def get_system_stats():
     """Get system statistics"""
     return transcript_manager.get_stats()
 
+@app.post("/clear-transcripts")
+async def clear_transcripts():
+    """Clear all stored transcripts and notify connected clients"""
+    await transcript_manager.clear_transcripts()
+    
+    # Update live display
+    if live_display and live_display.is_started:
+        layout = create_live_layout()
+        live_display.update(layout)
+    
+    return {
+        "status": "success",
+        "message": "All transcripts cleared",
+        "timestamp": datetime.now().isoformat(),
+        "websocket_clients_notified": transcript_manager.get_connection_count()
+    }
+
 @app.get("/ws/info")
 async def websocket_info():
     """Get WebSocket connection information"""

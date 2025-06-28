@@ -31,7 +31,7 @@ interface CallSession {
 }
 
 interface WebSocketMessage {
-  type: 'transcript' | 'call_status' | 'initial_data' | 'call_removed';
+  type: 'transcript' | 'call_status' | 'initial_data' | 'call_removed' | 'transcripts_cleared';
   data?: any;
   transcripts?: TranscriptEntry[];
   active_calls?: Record<string, CallSession>;
@@ -41,6 +41,7 @@ const Dashboard = () => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
   
   // State for real-time data
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
@@ -51,8 +52,34 @@ const Dashboard = () => {
     total_transcripts: 0,
     websocket_connections: 0
   });
+  const [showClearMessage, setShowClearMessage] = useState(false);
+
+  // Function to clear transcripts via backend API
+  const clearTranscripts = async () => {
+    try {
+      const response = await fetch(`${BACKEND_URL}/clear-transcripts`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      
+      if (response.ok) {
+        console.log('Transcripts cleared successfully');
+        // Show success message
+        setShowClearMessage(true);
+        setTimeout(() => setShowClearMessage(false), 2000);
+      } else {
+        console.error('Failed to clear transcripts');
+      }
+    } catch (error) {
+      console.error('Error clearing transcripts:', error);
+    }
+  };
 
   // Default call data for display when no active calls
+  const [defaultStartTime, setDefaultStartTime] = useState("--:--:--");
+  
   const defaultCallData = {
     id: "WAITING",
     status: "STANDBY",
@@ -68,9 +95,14 @@ const Dashboard = () => {
       phone: "Waiting for calls...",
       location: "N/A"
     },
-    startTime: new Date().toLocaleTimeString(),
+    startTime: defaultStartTime,
     duration: "00:00:00"
   };
+
+  // Set the default start time on client side only
+  useEffect(() => {
+    setDefaultStartTime(new Date().toLocaleTimeString());
+  }, []);
 
   // Get current call data
   const getCurrentCall = () => {
@@ -126,7 +158,15 @@ const Dashboard = () => {
           switch (message.type) {
             case 'initial_data':
               if (message.transcripts) {
-                setTranscripts(message.transcripts);
+                // Sort and deduplicate initial transcripts
+                const uniqueTranscripts = message.transcripts
+                  .sort((a: TranscriptEntry, b: TranscriptEntry) => 
+                    new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+                  )
+                  .filter((transcript: TranscriptEntry, index: number, arr: TranscriptEntry[]) => 
+                    index === arr.findIndex(t => t.id === transcript.id)
+                  );
+                setTranscripts(uniqueTranscripts);
               }
               if (message.active_calls) {
                 setActiveCalls(message.active_calls);
@@ -135,27 +175,64 @@ const Dashboard = () => {
               
             case 'transcript':
               if (message.data) {
-                setTranscripts(prev => [...prev, message.data].slice(-50)); // Keep last 50 transcripts
+                setTranscripts(prev => {
+                  // Check if this transcript already exists (prevent duplicates)
+                  const exists = prev.some(t => 
+                    t.id === message.data.id || 
+                    (t.transcript === message.data.transcript && 
+                     t.role === message.data.role && 
+                     Math.abs(new Date(t.timestamp).getTime() - new Date(message.data.timestamp).getTime()) < 1000)
+                  );
+                  
+                  if (exists) {
+                    return prev; // Don't add duplicate
+                  }
+                  
+                  return [...prev, message.data].slice(-50); // Keep last 50 transcripts
+                });
               }
               break;
               
             case 'call_status':
               if (message.data) {
+                const callStatus = message.data.session.status.toLowerCase();
+                
                 setActiveCalls(prev => ({
                   ...prev,
                   [message.data.call_id]: message.data.session
                 }));
+
+                // Clear transcripts when call ends
+                if (callStatus === 'ended' || callStatus === 'failed') {
+                  console.log(`Call ${message.data.call_id} ended, clearing transcripts`);
+                  setTranscripts([]);
+                  setShowClearMessage(true);
+                  setTimeout(() => setShowClearMessage(false), 3000);
+                }
               }
               break;
               
             case 'call_removed':
               if (message.data?.call_id) {
+                console.log(`Call ${message.data.call_id} removed, clearing transcripts`);
                 setActiveCalls(prev => {
                   const newCalls = { ...prev };
                   delete newCalls[message.data.call_id];
                   return newCalls;
                 });
+                
+                // Clear transcripts when call is removed
+                setTranscripts([]);
+                setShowClearMessage(true);
+                setTimeout(() => setShowClearMessage(false), 3000);
               }
+              break;
+              
+            case 'transcripts_cleared':
+              console.log('Transcripts cleared by server');
+              setTranscripts([]);
+              setShowClearMessage(true);
+              setTimeout(() => setShowClearMessage(false), 2000);
               break;
           }
         } catch (error) {
@@ -185,6 +262,13 @@ const Dashboard = () => {
       }
     };
   }, []);
+
+  // Auto-scroll to bottom when new transcripts arrive
+  useEffect(() => {
+    if (transcriptEndRef.current) {
+      transcriptEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [transcripts]);
 
   // Fetch initial stats
   useEffect(() => {
@@ -417,44 +501,71 @@ const Dashboard = () => {
       <div className="absolute top-16 right-6 z-10 bg-gray-800/95 backdrop-blur-sm rounded-lg shadow-2xl w-96 h-96 border border-gray-700 flex flex-col">
         <div className="flex items-center justify-between p-4 border-b border-gray-700">
           <h3 className="text-lg font-semibold text-white">Live Transcript</h3>
-          <div className="flex items-center space-x-2">
-            <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
-            <span className="text-xs text-gray-300">
-              {connectionStatus === 'connected' ? 'Recording' : 'Offline'}
-            </span>
+          <div className="flex items-center space-x-4">
+            <button 
+              onClick={clearTranscripts}
+              className="text-xs bg-red-600/20 text-red-300 px-2 py-1 rounded hover:bg-red-600/30 transition-colors"
+              title="Clear transcript"
+            >
+              Clear
+            </button>
+            <div className="flex items-center space-x-2">
+              <div className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+              <span className="text-xs text-gray-300">
+                {connectionStatus === 'connected' ? 'Recording' : 'Offline'}
+              </span>
+            </div>
           </div>
         </div>
         
         <div className="flex-1 p-4 overflow-y-auto space-y-3">
           {transcripts.length > 0 ? (
-            transcripts.slice(-10).map((entry, index) => (
-              <div key={entry.id} className="flex space-x-3">
-                <div className="flex-shrink-0">
-                  <div className="text-xs text-gray-400 font-mono">{formatTime(entry.timestamp)}</div>
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center space-x-2 mb-1">
-                    <span className={`text-xs font-medium px-2 py-1 rounded ${
-                      entry.role === 'assistant' 
-                        ? 'bg-blue-600/20 text-blue-300' 
-                        : 'bg-green-600/20 text-green-300'
-                    }`}>
-                      {entry.role === 'assistant' ? 'Operator' : 'Caller'}
-                    </span>
-                    {entry.confidence < 0.8 && (
-                      <span className="text-xs text-yellow-400">Low confidence</span>
-                    )}
+            transcripts
+              .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()) // Sort by timestamp
+              .slice(-15) // Show last 15 entries
+              .map((entry, index) => (
+                <div key={`${entry.id}-${index}`} className="flex space-x-3 animate-fade-in">
+                  <div className="flex-shrink-0">
+                    <div className="text-xs text-gray-400 font-mono">{formatTime(entry.timestamp)}</div>
                   </div>
-                  <p className="text-sm text-white leading-relaxed">{entry.transcript}</p>
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2 mb-1">
+                      <span className={`text-xs font-medium px-2 py-1 rounded ${
+                        entry.role === 'assistant' 
+                          ? 'bg-blue-600/20 text-blue-300' 
+                          : 'bg-green-600/20 text-green-300'
+                      }`}>
+                        {entry.role === 'assistant' ? 'Operator' : 'Caller'}
+                      </span>
+                      {entry.confidence < 0.8 && (
+                        <span className="text-xs text-yellow-400">Low confidence</span>
+                      )}
+                    </div>
+                    <p className="text-sm text-white leading-relaxed">{entry.transcript}</p>
+                  </div>
                 </div>
-              </div>
-            ))
+              ))
           ) : (
             <div className="text-center text-gray-400 py-8">
-              <p>Waiting for transcript data...</p>
-              <p className="text-xs mt-2">Connection: {getConnectionStatusText()}</p>
+              {showClearMessage ? (
+                <div className="text-center">
+                  <p className="text-green-400">📞 Call ended</p>
+                  <p className="text-xs mt-2 text-green-300">Transcript cleared</p>
+                </div>
+              ) : Object.keys(activeCalls).length === 0 ? (
+                <>
+                  <p>Waiting for transcript data...</p>
+                  <p className="text-xs mt-2">Connection: {getConnectionStatusText()}</p>
+                </>
+              ) : (
+                <>
+                  <p>📞 Call active</p>
+                  <p className="text-xs mt-2">Waiting for speech...</p>
+                </>
+              )}
             </div>
           )}
+          <div ref={transcriptEndRef} />
         </div>
         
         <div className="p-4 border-t border-gray-700 bg-gray-900/50">
