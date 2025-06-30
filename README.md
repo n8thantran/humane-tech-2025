@@ -1,3 +1,5 @@
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/n8thantran/humane-tech-2025)
+
 # Humane Tech 2025
 
 A full-stack application for real-time call transcription and visualization, combining a FastAPI backend with a Next.js frontend.
